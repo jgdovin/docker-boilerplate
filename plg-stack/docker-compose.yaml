@@ -93,7 +93,7 @@ services:
       [
         '--log.level=debug',
         '--config.file=/etc/prometheus/prometheus.yml',
-        '--enable-feature=remote-write-receiver',
+        '--web.enable-remote-write-receiver',
         '--query.lookback-delta=30s'
       ]
     networks:
