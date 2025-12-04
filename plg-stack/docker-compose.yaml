@@ -1,0 +1,209 @@
+networks:
+  loki:
+
+volumes:
+  prometheus:
+  grafana:
+  alertmanager-data:
+  loki:
+
+services:
+  alloy:
+    image: grafana/alloy:v1.10.0
+    container_name: alloy
+    hostname: alloy
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./config.alloy:/etc/alloy/config.alloy
+      - alloy_data:/var/lib/alloy/data
+      - /:/rootfs:ro
+      - /run:/run:ro
+      - /var/log:/var/log:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker/:ro
+      - /run/udev/data:/run/udev/data:ro
+    restart: unless-stopped
+    networks:
+      - loki
+  # Metrics exporter to convert logs to Prometheus metrics
+  metrics-exporter:
+    build: 
+      context: ./scripts
+      dockerfile: Dockerfile
+    volumes:
+      - ./loki/:/var/log/
+    ports:
+      - "8084:8084"
+    networks:
+      - loki
+    depends_on:
+      - log-generator
+
+
+
+  # Since the Loki containers are running as user 10001 and the mounted data volume is owned by root,
+  # Loki would not have permissions to create the directories.
+  # Therefore the init container changes permissions of the mounted directory.
+  init:
+    image: &lokiImage grafana/loki:3.4.3
+    user: root
+    entrypoint:
+      - "chown"
+      - "10001:10001"
+      - "/loki"
+    volumes:
+      - ./loki:/loki
+    networks:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    ports:
+      - "3001:3000"
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - ./config/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yml
+      - grafana:/var/lib/grafana
+    networks:
+      - loki
+
+  prometheus:
+    image: prom/prometheus:v3.2.1
+    ports:
+      - "9090:9090"  # Exposing on a fixed port for easier access
+    volumes:
+      - ./config/prometheus.yaml:/etc/prometheus/prometheus.yml
+      - prometheus:/prometheus
+    command:
+      [
+        '--log.level=debug',
+        '--config.file=/etc/prometheus/prometheus.yml',
+        '--enable-feature=remote-write-receiver',
+        '--query.lookback-delta=30s'
+      ]
+    networks:
+      - loki
+
+  # for testing purposes only, disable in production
+  log-generator:
+    image: mingrammer/flog:0.4.3
+    command:
+      - --loop
+      - --format=json
+      - --number=10  # number of log lines to generate per second
+      - --delay=100ms  # delay between log lines
+      - --output=/var/log/generated-logs.txt
+      - --overwrite
+      - --type=log
+    volumes:
+      - ./loki/:/var/log/
+    networks:
+      - loki
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    entrypoint:
+      - sh
+      - -euc
+      - |
+        mkdir -p /data/loki-data && \
+        mkdir -p /data/loki-ruler &&
+        minio server --address "0.0.0.0:9000" --console-address "0.0.0.0:9001" /data
+    environment:
+      - MINIO_ROOT_USER=loki
+      - MINIO_ROOT_PASSWORD=supersecret
+      - MINIO_PROMETHEUS_AUTH_TYPE=public
+      - MINIO_UPDATE=off
+    ports:
+      - "9003:9000"
+      - "9004:9001"
+    volumes:
+      - ./.data/minio:/data
+    networks:
+      - loki
+
+  loki-gateway:
+    image: nginx:1.27.5
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf
+    ports:
+      - "8083:80"
+      - "3100"
+    networks:
+      - loki
+
+  loki-read:
+    image: *lokiImage
+    volumes:
+      - ./config:/etc/loki/
+    ports:
+      - "3100"
+      - "7946"
+    command: "-config.file=/etc/loki/loki.yaml -target=read -legacy-read-mode=false"
+    networks:
+      - loki
+    restart: always
+    deploy:
+      mode: replicated
+      replicas: 3
+
+  loki-write:
+    image: *lokiImage
+    volumes:
+      - ./config:/etc/loki/
+    ports:
+      - "3100"
+      - "7946"
+    command: "-config.file=/etc/loki/loki.yaml -target=write"
+    networks:
+      - loki
+    restart: always
+    deploy:
+      mode: replicated
+      replicas: 3
+
+  loki-backend:
+    image: *lokiImage
+    volumes:
+      - ./config:/etc/loki/
+      - ./rules:/loki/rules:ro
+    ports:
+      - "3100"
+      - "7946"
+    command: "-config.file=/etc/loki/loki.yaml -target=backend -legacy-read-mode=false"
+    networks:
+      - loki
+    restart: always
+    deploy:
+      mode: replicated
+      replicas: 3
+
+  # alertmanager to enable receiving alerts
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - "./config:/config"
+      - alertmanager-data:/data
+    command: --config.file=/config/alertmanager.yml --log.level=debug
+    networks:
+      - loki
+
+volumes:
+  alloy_data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=10.0.0.195,rw,noatime,rsize=8192,wsize=8192,tcp,timeo=14,nfsvers=4
+      device: ":/volume1/decoyVolumeMounts/volumes/alloy/alloy_data"
