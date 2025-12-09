@@ -114,7 +114,7 @@ sudo tee /etc/docker/daemon.json > /dev/null <<EOF
     }
   ],
   "userland-proxy": false,
-  "live-restore": true,
+  "live-restore": false,
   "storage-driver": "overlay2"
 }
 EOF
