@@ -1,0 +1,108 @@
+version: '3.8'
+
+networks:
+  proxy:
+    external: true
+    
+volumes:
+  prometheus-data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=10.0.0.195,rw,noatime,rsize=8192,wsize=8192,tcp,timeo=14,nfsvers=4
+      device: ":/volume1/decoyVolumeMounts/volumes/plg-prometheus"
+
+configs:
+  alloy_config:
+    file: ./alloy/config/config.alloy
+  prometheus_config:
+    file: ./prometheus/config/prometheus.yml
+  prometheus_rules:
+    file: ./prometheus/config/rules.yml
+
+services:
+  # Grafana Alloy - Unified observability agent
+  # Runs on every swarm node to collect host metrics and logs
+  alloy:
+    image: grafana/alloy:latest
+    networks:
+      - proxy
+    ports:
+      - "12345:12345"
+    configs:
+      - source: alloy_config
+        target: /etc/alloy/config.alloy
+    volumes:
+      # Host filesystem access for metrics collection
+      - /:/host/root:ro
+      - /sys:/host/sys:ro
+      - /proc:/host/proc:ro
+      # Docker socket for container discovery (future log collection)
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+    environment:
+      - HOSTNAME=${HOSTNAME}
+    deploy:
+      mode: global
+      resources:
+        limits:
+          cpus: '0.50'
+          memory: 256M
+        reservations:
+          cpus: '0.25'
+          memory: 128M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # Prometheus - Metrics database and query engine
+  prometheus:
+    image: prom/prometheus:latest
+    networks:
+      - proxy
+    ports:
+      - "9090:9090"
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+      - source: prometheus_rules
+        target: /etc/prometheus/rules.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+      - '--web.enable-remote-write-receiver'
+    volumes:
+      - prometheus-data:/prometheus
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '1.0'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

@@ -1,0 +1,64 @@
+groups:
+  - name: node_recording_rules
+    interval: 30s
+    rules:
+      # CPU Usage
+      - record: instance:node_cpu_utilization:ratio
+        expr: |
+          (
+            1 - avg without (cpu, mode) (
+              rate(node_cpu_seconds_total{mode="idle"}[5m])
+            )
+          )
+
+      # Memory Usage
+      - record: instance:node_memory_utilization:ratio
+        expr: |
+          (
+            1 - (
+              node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+            )
+          )
+
+      # Disk Usage
+      - record: instance:node_disk_utilization:ratio
+        expr: |
+          (
+            1 - (
+              node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.*"} /
+              node_filesystem_size_bytes{fstype!~"tmpfs|fuse.*"}
+            )
+          )
+
+      # Network receive bytes rate (5m avg)
+      - record: instance:node_network_receive_bytes:rate5m
+        expr: |
+          rate(node_network_receive_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[5m])
+
+      # Network transmit bytes rate (5m avg)
+      - record: instance:node_network_transmit_bytes:rate5m
+        expr: |
+          rate(node_network_transmit_bytes_total{device!~"lo|veth.*|docker.*|br-.*"}[5m])
+
+  - name: container_recording_rules
+    interval: 30s
+    rules:
+      # Container CPU usage
+      - record: container:cpu_usage:rate5m
+        expr: |
+          rate(container_cpu_usage_seconds_total{container!=""}[5m])
+
+      # Container memory usage
+      - record: container:memory_usage_bytes:sum
+        expr: |
+          sum by (container, instance) (container_memory_usage_bytes{container!=""})
+
+      # Container network receive
+      - record: container:network_receive_bytes:rate5m
+        expr: |
+          rate(container_network_receive_bytes_total{container!=""}[5m])
+
+      # Container network transmit
+      - record: container:network_transmit_bytes:rate5m
+        expr: |
+          rate(container_network_transmit_bytes_total{container!=""}[5m])
